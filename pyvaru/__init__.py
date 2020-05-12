@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 from inspect import isfunction
+from typing import Tuple, Union
 
 __version__ = '0.3.0'
 __all__ = (
@@ -71,7 +72,7 @@ class ValidationRule(ABC):
         return self.custom_error_message or self.default_error_message
 
     @abstractmethod
-    def apply(self) -> bool:
+    def apply(self) -> Union[bool, Tuple[bool, str]]:
         """
         Abstract method that must be implemented by concrete get_rules in order to return a boolean
         indicating whether the rule is respected or not.
@@ -104,9 +105,9 @@ class InvalidRuleGroupException(Exception):
 class RuleGroup(ValidationRule):
     """
     Allows the execution of multiple rules sequentially.
-    
+
     :Example:
-        
+
     >>> rules = [
     >>>    (TypeRule, {'valid_type': list}),
     >>>    (MinLengthRule, {'min_length': 1}),
@@ -160,7 +161,7 @@ class RuleGroup(ValidationRule):
             return self._failed_rule.get_error_message()
         return super().get_error_message()
 
-    def apply(self) -> bool:
+    def apply(self) -> Union[bool, Tuple[bool, str]]:
         for entry in self.rules:
             rule = self._get_configured_rule(entry)
             try:
@@ -184,7 +185,7 @@ class ValidationResult:
     def __init__(self, errors: dict = None):
         self.errors = errors or {}
 
-    def annotate_rule_violation(self, rule: ValidationRule) -> None:
+    def annotate_rule_violation(self, rule: ValidationRule, err_msg=None) -> None:
         """
         Takes note of a rule validation failure by collecting its error message.
 
@@ -194,7 +195,7 @@ class ValidationResult:
         """
         if self.errors.get(rule.label) is None:
             self.errors[rule.label] = []
-        self.errors[rule.label].append(rule.get_error_message())
+        self.errors[rule.label].append(err_msg or rule.get_error_message())
 
     def annotate_exception(self, exception: Exception, rule: ValidationRule = None) -> None:
         """
@@ -259,11 +260,8 @@ class Validator(ABC):
     :type data: object
     """
 
-    def __init__(self, data: object):
-        self.data = data
-
-    def __enter__(self):
-        validation = self.validate()
+    def __enter__(self, data):
+        validation = self.validate(data)
         if not validation.is_successful():
             raise ValidationException(validation)
         return self
@@ -272,7 +270,7 @@ class Validator(ABC):
         pass
 
     @abstractmethod
-    def get_rules(self) -> list:
+    def get_rules(self, data) -> list:
         """
         Concrete validators must implement this abstract method in order to return a list of ValidationRule(s),
         that will be used to validate the model.
@@ -282,7 +280,7 @@ class Validator(ABC):
         """
         pass  # pragma: no cover
 
-    def validate(self) -> ValidationResult:
+    def validate(self, data) -> ValidationResult:
         """
         Apply the configured ValidationRule(s) (in the given order) and return a ValidationResult object.
 
@@ -291,10 +289,17 @@ class Validator(ABC):
         """
         result = ValidationResult()
         try:
-            for rule in self.get_rules():
+            for rule in self.get_rules(data):
                 try:
-                    if not rule.apply():
-                        result.annotate_rule_violation(rule)
+                    rule_result = rule.apply()
+                    message = None
+                    if isinstance(rule_result, tuple):
+                        valid, message = rule_result
+                    else:
+                        valid = rule_result
+
+                    if not valid:
+                        result.annotate_rule_violation(rule, message)
                         if rule.stop_if_invalid:
                             break
                 except Exception as e:
